@@ -300,6 +300,7 @@ function SheetHandler(sheet) {
     
     var scriptUri = ScriptApp.getService().getUrl();
     // hack some values on to the data just for email templates.
+    d.cancel_url = scriptUri + "?i=" + d.identifier + '&state=' + CANCELLED_STATE;
 
     d.accept_url = scriptUri + "?i=" + d.identifier + '&state=' + COVERAGE_APPROVED_STATE;
 
@@ -318,6 +319,10 @@ function SheetHandler(sheet) {
     subject = Utils.processTemplate(SETTINGS.PENDING_COVERAGE_EMAIL_SUBJECT, d);
     
     MailApp.sendEmail(coverage_email,subject,"",{ htmlBody: message });
+    
+    message = Utils.processTemplate(SETTINGS.REQUEST_RECEIVED_EMAIL, d);
+    subject = Utils.processTemplate(SETTINGS.REQUEST_RECEIVED_EMAIL_SUBJECT, d);
+    MailApp.sendEmail(d.emailAddress,subject,"",{ htmlBody: message });
     
 
     //create calendar event
@@ -366,7 +371,7 @@ function SheetHandler(sheet) {
       guests.push(d.actor);
     }
     
-    var title = Utils.processTemplate(SETTINGS.CALENDAR_EVENT_TITLE, d);
+    var title = Utils.processTemplate(SETTINGS.CALENDAR_EVENT_TITLE, d) + " (PENDING)";
     var description = Utils.processTemplate(SETTINGS.CALENDAR_EVENT_DESCRIPTION, d);
     var location = Utils.processTemplate(SETTINGS.CALENDAR_EVENT_LOCATION, d);
     
@@ -404,18 +409,22 @@ function SheetHandler(sheet) {
 
   //function to change the event color
   var _modifyApprovedCalendarEvent = function(d) {
+    
+    //change color
     var calendarId = SETTINGS.GROUP_CALENDAR_ID;
     var calendar = CalendarApp.getCalendarById(calendarId);
     var event = calendar.getEventById(d.eventId);
     event.setColor(CalendarApp.EventColor.BLUE);
+    
+    //change title
+    event.setTitle(Utils.processTemplate(SETTINGS.CALENDAR_EVENT_TITLE, d) + " (APPROVED)");
   }
   
   
   //sends the pending emails to manager once coverage approves
   var approveByCoverageKey = function(k, user) {
     var d = _getDataByKey(k);
-    d.state = COVERAGE_APPROVED_STATE;
-    d.actor = user;
+    d.actor= d[SETTINGS.COVERAGE_EMAIL_COLUMN_NAME].match(EMAIL_REGEX);
     
     //to check if the standard time columns needs to be re-initialized
     d.standardStartTime = Utilities.formatDate(d.leaveStartDate, "PST", "EEE, MMM d, yyyy hh:mm a");
@@ -439,6 +448,7 @@ function SheetHandler(sheet) {
     message = Utils.processTemplate(SETTINGS.PENDING_MANAGER_EMAIL, d);
     subject = Utils.processTemplate(SETTINGS.PENDING_MANAGER_EMAIL_SUBJECT, d); 
     
+    if(d.state == PENDING_STATE){
     MailApp.sendEmail(manager_email,subject,"",{ htmlBody: message });
     
     //send coverage approval email
@@ -446,7 +456,9 @@ function SheetHandler(sheet) {
     subject = Utils.processTemplate(SETTINGS.COVERAGE_APPROVAL_EMAIL_SUBJECT, d); 
     
     MailApp.sendEmail(d.emailAddress,subject,"",{ htmlBody: message });
-       
+    d.state = COVERAGE_APPROVED_STATE;
+    }
+    
     setRowData(_sheet, d);
   }
   //end request approved email
@@ -455,9 +467,8 @@ function SheetHandler(sheet) {
   //sends the approved emails to employee once manager also confirms 
   var approveByManagerKey = function(k, user) {
     var d = _getDataByKey(k);
-    d.state = MANAGER_APPROVED_STATE;
-    d.actor = user;
-    
+    //d.actor = user;
+    d.actor= d[SETTINGS.COVERAGE_EMAIL_COLUMN_NAME].match(EMAIL_REGEX);
 
     //to check if the standard time columns needs to be re-initialized
     d.standardStartTime = Utilities.formatDate(d.leaveStartDate, "PST", "EEE, MMM d, yyyy hh:mm a");
@@ -470,15 +481,14 @@ function SheetHandler(sheet) {
     d.approvalButton = 'Already Approved';
     d.denialButton = 'Already Approved';
     
+    if(d.state == COVERAGE_APPROVED_STATE){
     message = Utils.processTemplate(SETTINGS.MANAGER_APPROVAL_EMAIL, d);
     subject = Utils.processTemplate(SETTINGS.MANAGER_APPROVAL_EMAIL_SUBJECT, d);
-    
-    
     MailApp.sendEmail(d.emailAddress,subject,"",{ htmlBody: message });
-    
+     
     //send notification email to coverage person that manager has approved
     if(SETTINGS.SEND_APPROVAL_NOTICE_EMAIL == 1) {
-    
+   
       message = Utils.processTemplate(SETTINGS.APPROVAL_NOTICE_EMAIL, d);
       subject = Utils.processTemplate(SETTINGS.APPROVAL_NOTICE_EMAIL_SUBJECT, d);
       MailApp.sendEmail(d[SETTINGS.COVERAGE_EMAIL_COLUMN_NAME].match(EMAIL_REGEX), subject, "",{ htmlBody: message });
@@ -486,7 +496,8 @@ function SheetHandler(sheet) {
     
     //change event color to blue
       _modifyApprovedCalendarEvent(d);
-
+      d.state = MANAGER_APPROVED_STATE;
+     }
     
     setRowData(_sheet, d);
   }
@@ -496,9 +507,11 @@ function SheetHandler(sheet) {
   //sends the denial emails
   var denyByKey = function(k, user) {
     var d = _getDataByKey(k);
-    d.state = DENIED_STATE;
     d.actor = user;
     //d.actor = d[SETTINGS.MANAGERS_EMAIL_COLUMN_NAME].match(EMAIL_REGEX);
+    
+    manager_email = d[SETTINGS.MANAGERS_EMAIL_COLUMN_NAME].match(EMAIL_REGEX);
+    d.manager_email = manager_email;
     
     //to check if the standard time columns needs to be re-initialized
     d.standardStartTime = Utilities.formatDate(d.leaveStartDate, "PST", "EEE, MMM d, yyyy hh:mm a");
@@ -508,13 +521,15 @@ function SheetHandler(sheet) {
     d.approvalButton = 'Already Denied';
     d.denialButton = 'Already Denied';
     
+     if((d.state == PENDING_STATE) || ((d.state == COVERAGE_APPROVED_STATE) && (user == d.manager_email))) {
     message = Utils.processTemplate(SETTINGS.USER_DENIED_EMAIL, d);
     subject = Utils.processTemplate(SETTINGS.USER_DENIED_EMAIL_SUBJECT, d);
     MailApp.sendEmail(d.emailAddress, subject, "",{ htmlBody: message });
     
      //delete calendar event
     _deleteCalendarEvent(d); 
-    
+     d.state = DENIED_STATE;
+     }
     setRowData(_sheet, d);
   }
   
@@ -523,7 +538,6 @@ function SheetHandler(sheet) {
   //cancellation emails
   var cancelByKey = function(k, user) {
     var d = _getDataByKey(k);
-    d.state = CANCELLED_STATE;
     d.actor = d[SETTINGS.MANAGERS_EMAIL_COLUMN_NAME].match(EMAIL_REGEX);
     
     d.standardStartTime = Utilities.formatDate(d.leaveStartDate, "PST", "EEE, MMM d, yyyy hh:mm a");
@@ -531,6 +545,8 @@ function SheetHandler(sheet) {
        
     d.approvalButton = 'Cancelled';
     d.denialButton = 'Cancelled';
+    
+    if (d.state != CANCELLED_STATE){
     
     //send email to manager
     message = Utils.processTemplate(SETTINGS.USER_CANCELLED_EMAIL, d);
@@ -543,7 +559,9 @@ function SheetHandler(sheet) {
     MailApp.sendEmail(d[SETTINGS.COVERAGE_EMAIL_COLUMN_NAME].match(EMAIL_REGEX), subject, "",{ htmlBody: message });
     
     //delete calendar event
-    _deleteCalendarEvent(d); 
+    _deleteCalendarEvent(d);
+    d.state = CANCELLED_STATE;
+    }
 
     setRowData(_sheet, d);
   }
